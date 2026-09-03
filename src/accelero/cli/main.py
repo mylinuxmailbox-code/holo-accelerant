@@ -76,6 +76,16 @@ def _pip_install(
     err = result.stderr.strip() or result.stdout.strip() or "pip install failed"
     return False, err
 
+
+def _normalize_editable_target(target: str, base_dir: Path) -> str:
+    """Resolve local editable targets relative to their requirements file."""
+    if "://" in target or target.startswith("git+"):
+        return target
+    p = Path(target)
+    if p.is_absolute():
+        return str(p)
+    return str((base_dir / p).resolve())
+
 async def cmd_install(args: argparse.Namespace, config: Config, output: Output) -> int:
     """Install packages."""
     timings = Timings()
@@ -104,7 +114,8 @@ async def cmd_install(args: argparse.Namespace, config: Config, output: Output) 
                     if not line or line.startswith("#"):
                         continue
                     if line.startswith("-e ") or line.startswith("--editable "):
-                        editable_targets.append(line.split(maxsplit=1)[1].strip())
+                        target = line.split(maxsplit=1)[1].strip()
+                        editable_targets.append(_normalize_editable_target(target, req_path.parent))
                         continue
                     if line.startswith("-"):
                         continue
@@ -166,119 +177,119 @@ async def cmd_install(args: argparse.Namespace, config: Config, output: Output) 
                 continue
             to_install.append(pkg)
 
-        if not to_install:
-            output.success("All packages already installed")
-            return 0
-
-        # Download all wheels
-        timings.start("download")
-        download_dir = cache.cache_dir / "downloads"
-        download_dir.mkdir(parents=True, exist_ok=True)
-
-        download_tasks = []
-        predownloaded: list[tuple[ResolvedPackage, Path]] = []
-        for pkg in to_install:
-            # Determine destination filename
-            filename = pkg.url.split("/")[-1]
-            if pkg.wheel:
-                cached_wheel = cache.find_wheel(pkg.name, pkg.version, filename)
-                if cached_wheel and cached_wheel.exists():
-                    dest = download_dir / filename
-                    if not dest.exists():
-                        try:
-                            shutil.copy2(cached_wheel, dest)
-                        except Exception:
-                            dest = cached_wheel
-                    predownloaded.append((pkg, dest))
-                    continue
-            dest = download_dir / filename
-            download_tasks.append((pkg, pkg.url, dest))
-
-        downloaded_results: list[tuple[ResolvedPackage, Path | None]] = []
-        if download_tasks:
-            with output.progress() as progress:
-                download_task = progress.add_task(
-                    "Downloading", total=len(download_tasks)
-                )
-
-                async def download_one(pkg, url, dest):
-                    if dest.exists() and dest.stat().st_size > 0:
-                        # Already downloaded
-                        return pkg, dest
-                    # Stream download
-                    try:
-                        await http.download_stream(url, dest)
-                    except Exception as e:
-                        output.warning(f"Download failed for {pkg.name}: {e}")
-                        return pkg, None
-                    return pkg, dest
-
-                downloaded_results = await asyncio.gather(
-                    *[download_one(p, u, d) for p, u, d in download_tasks]
-                )
-                progress.update(download_task, completed=len(downloaded_results))
-
-        results: list[tuple[ResolvedPackage, Path | None]] = [
-            *[(pkg, path) for pkg, path in predownloaded],
-            *downloaded_results,
-        ]
-
-        timings.stop("download")
-
-        # Install
-        timings.start("install")
-        installer = WheelInstaller(
-            target_dir=env.target_dir,
-            install_lib=env.site_packages,
-            install_bin=env.scripts_dir,
-        )
-
         install_results: list[Any] = []
         failed: list[tuple[str, str]] = []
-        with output.progress() as progress:
-            install_task = progress.add_task(
-                "Installing", total=len(results)
-            )
-            for pkg, dest in results:
-                if dest is None or not dest.exists():
-                    failed.append((pkg.name, "Download failed"))
-                    progress.advance(install_task)
-                    continue
 
-                try:
-                    if pkg.wheel:
-                        installed = installer.install_wheel(dest)
-                        if installed:
-                            install_results.append(installed)
-                            # Cache the wheel
+        if not to_install:
+            output.success("All packages already installed")
+        else:
+            # Download all wheels
+            timings.start("download")
+            download_dir = cache.cache_dir / "downloads"
+            download_dir.mkdir(parents=True, exist_ok=True)
+
+            download_tasks = []
+            predownloaded: list[tuple[ResolvedPackage, Path]] = []
+            for pkg in to_install:
+                # Determine destination filename
+                filename = pkg.url.split("/")[-1]
+                if pkg.wheel:
+                    cached_wheel = cache.find_wheel(pkg.name, pkg.version, filename)
+                    if cached_wheel and cached_wheel.exists():
+                        dest = download_dir / filename
+                        if not dest.exists():
                             try:
-                                cache.store_wheel(
-                                    dest, pkg.name, pkg.version, dest.name, pkg.url
-                                )
+                                shutil.copy2(cached_wheel, dest)
                             except Exception:
-                                pass
-                    else:
-                        ok, err = _pip_install(
-                            env_python,
-                            str(dest),
-                            editable=False,
-                            no_deps=True,
-                        )
-                        if ok:
-                            install_results.append(
-                                {
-                                    "name": pkg.name,
-                                    "version": pkg.version,
-                                }
-                            )
+                                dest = cached_wheel
+                        predownloaded.append((pkg, dest))
+                        continue
+                dest = download_dir / filename
+                download_tasks.append((pkg, pkg.url, dest))
+
+            downloaded_results: list[tuple[ResolvedPackage, Path | None]] = []
+            if download_tasks:
+                with output.progress() as progress:
+                    download_task = progress.add_task(
+                        "Downloading", total=len(download_tasks)
+                    )
+
+                    async def download_one(pkg, url, dest):
+                        if dest.exists() and dest.stat().st_size > 0:
+                            # Already downloaded
+                            return pkg, dest
+                        # Stream download
+                        try:
+                            await http.download_stream(url, dest)
+                        except Exception as e:
+                            output.warning(f"Download failed for {pkg.name}: {e}")
+                            return pkg, None
+                        return pkg, dest
+
+                    downloaded_results = await asyncio.gather(
+                        *[download_one(p, u, d) for p, u, d in download_tasks]
+                    )
+                    progress.update(download_task, completed=len(downloaded_results))
+
+            results: list[tuple[ResolvedPackage, Path | None]] = [
+                *[(pkg, path) for pkg, path in predownloaded],
+                *downloaded_results,
+            ]
+
+            timings.stop("download")
+
+            # Install
+            timings.start("install")
+            installer = WheelInstaller(
+                target_dir=env.target_dir,
+                install_lib=env.site_packages,
+                install_bin=env.scripts_dir,
+            )
+
+            with output.progress() as progress:
+                install_task = progress.add_task(
+                    "Installing", total=len(results)
+                )
+                for pkg, dest in results:
+                    if dest is None or not dest.exists():
+                        failed.append((pkg.name, "Download failed"))
+                        progress.advance(install_task)
+                        continue
+
+                    try:
+                        if pkg.wheel:
+                            installed = installer.install_wheel(dest)
+                            if installed:
+                                install_results.append(installed)
+                                # Cache the wheel
+                                try:
+                                    cache.store_wheel(
+                                        dest, pkg.name, pkg.version, dest.name, pkg.url
+                                    )
+                                except Exception:
+                                    pass
                         else:
-                            failed.append((pkg.name, err))
-                            output.error(f"Install failed for {pkg.name}: {err}")
-                except Exception as e:
-                    failed.append((pkg.name, str(e)))
-                    output.error(f"Install failed for {pkg.name}: {e}")
-                progress.advance(install_task)
-        timings.stop("install")
+                            ok, err = _pip_install(
+                                env_python,
+                                str(dest),
+                                editable=False,
+                                no_deps=True,
+                            )
+                            if ok:
+                                install_results.append(
+                                    {
+                                        "name": pkg.name,
+                                        "version": pkg.version,
+                                    }
+                                )
+                            else:
+                                failed.append((pkg.name, err))
+                                output.error(f"Install failed for {pkg.name}: {err}")
+                    except Exception as e:
+                        failed.append((pkg.name, str(e)))
+                        output.error(f"Install failed for {pkg.name}: {e}")
+                    progress.advance(install_task)
+            timings.stop("install")
 
         timings.stop("total")
 
