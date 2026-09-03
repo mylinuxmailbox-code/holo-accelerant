@@ -205,6 +205,7 @@ Holo Accelerant aims to be a transparent drop-in replacement for pip.
 - PEP 691 JSON API
 - Wheels (pure Python and platform-specific)
 - Source distributions (tar.gz)
+- Editable installs (`-e`, `--editable`)
 - `requirements.txt` files
 - Constraints files
 - Environment markers (platform, python_version, etc.)
@@ -215,8 +216,7 @@ Holo Accelerant aims to be a transparent drop-in replacement for pip.
 - Virtual environment detection
 
 ### Known Limitations
-- Editable installs (`pip install -e .`) not yet supported
-- Build isolation for sdists uses `pip install` fallback
+- Build isolation for sdists and editable installs currently uses `pip install` fallback
 - Hash verification (`--require-hashes`) is verified post-download, not enforced per-request
 
 ## Cache Behavior
