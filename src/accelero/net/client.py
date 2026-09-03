@@ -121,7 +121,15 @@ class HTTPClient:
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Lazily create the HTTP client."""
         if self._client is None:
-            self._client = httpx.AsyncClient(**self._config)
+            try:
+                self._client = httpx.AsyncClient(**self._config)
+            except ImportError:
+                if self._config.get("http2"):
+                    logger.warning("HTTP/2 support unavailable; falling back to HTTP/1.1")
+                    self._config["http2"] = False
+                    self._client = httpx.AsyncClient(**self._config)
+                else:
+                    raise
         return self._client
 
     async def close(self) -> None:

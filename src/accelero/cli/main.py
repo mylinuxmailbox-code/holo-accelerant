@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -182,7 +183,13 @@ async def cmd_install(args: argparse.Namespace, config: Config, output: Output) 
             if pkg.wheel:
                 cached_wheel = cache.find_wheel(pkg.name, pkg.version, filename)
                 if cached_wheel and cached_wheel.exists():
-                    predownloaded.append((pkg, cached_wheel))
+                    dest = download_dir / filename
+                    if not dest.exists():
+                        try:
+                            shutil.copy2(cached_wheel, dest)
+                        except Exception:
+                            dest = cached_wheel
+                    predownloaded.append((pkg, dest))
                     continue
             dest = download_dir / filename
             download_tasks.append((pkg, pkg.url, dest))

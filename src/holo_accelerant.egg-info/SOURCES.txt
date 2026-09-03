@@ -1,6 +1,9 @@
+LICENSE
+README.md
 pyproject.toml
 setup.py
 src/accelero/__init__.py
+src/accelero/__main__.py
 src/accelero/cache/__init__.py
 src/accelero/cache/store.py
 src/accelero/cli/__init__.py
@@ -25,3 +28,4 @@ src/holo_accelerant.egg-info/entry_points.txt
 src/holo_accelerant.egg-info/requires.txt
 src/holo_accelerant.egg-info/top_level.txt
 tests/test_basic.py
+tests/test_install.py
