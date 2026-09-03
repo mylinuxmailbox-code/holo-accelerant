@@ -1,0 +1,16 @@
+packaging>=23.0
+aiohttp>=3.8
+rich>=13.0
+httpx>=0.25
+
+[:python_version < "3.11"]
+tomli>=2.0
+
+[dev]
+build
+twine
+ruff
+
+[test]
+pytest>=7.0
+pytest-asyncio>=0.21

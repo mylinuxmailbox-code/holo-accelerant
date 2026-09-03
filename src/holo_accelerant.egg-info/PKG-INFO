@@ -1,0 +1,36 @@
+Metadata-Version: 2.4
+Name: holo-accelerant
+Version: 0.1.0
+Summary: Holo Accelerant - Python package installation at ludicrous speed.
+Author: Holo Accelerant Project
+License: MIT
+Project-URL: Homepage, https://github.com/holo-accelerant/holo-accelerant
+Project-URL: Bug Tracker, https://github.com/holo-accelerant/holo-accelerant/issues
+Keywords: pip,installer,package-manager,pypi,performance,uv
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Software Development :: Build Tools
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: packaging>=23.0
+Requires-Dist: aiohttp>=3.8
+Requires-Dist: rich>=13.0
+Requires-Dist: httpx>=0.25
+Requires-Dist: tomli>=2.0; python_version < "3.11"
+Provides-Extra: test
+Requires-Dist: pytest>=7.0; extra == "test"
+Requires-Dist: pytest-asyncio>=0.21; extra == "test"
+Provides-Extra: dev
+Requires-Dist: build; extra == "dev"
+Requires-Dist: twine; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Dynamic: requires-python
