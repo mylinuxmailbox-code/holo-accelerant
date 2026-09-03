@@ -9,6 +9,8 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -44,6 +46,46 @@ logger = get_logger()
 
 # === Subcommand Implementations ===
 
+
+def _get_environment_python(env) -> Path:
+    """Return the Python executable for the target environment."""
+    target_python = env.target_dir / "bin" / "python"
+    if target_python.exists():
+        return target_python
+    return env.python_executable
+
+
+def _pip_install(
+    python_executable: Path,
+    target: str,
+    *,
+    editable: bool = False,
+    no_deps: bool = False,
+) -> tuple[bool, str]:
+    """Install using pip as a compatibility fallback."""
+    cmd = [str(python_executable), "-m", "pip", "install", "--no-input"]
+    if no_deps:
+        cmd.append("--no-deps")
+    if editable:
+        cmd.extend(["--editable", target])
+    else:
+        cmd.append(target)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return True, ""
+    err = result.stderr.strip() or result.stdout.strip() or "pip install failed"
+    return False, err
+
+
+def _normalize_editable_target(target: str, base_dir: Path) -> str:
+    """Resolve local editable targets relative to their requirements file."""
+    if "://" in target or target.startswith("git+"):
+        return target
+    p = Path(target)
+    if p.is_absolute():
+        return str(p)
+    return str((base_dir / p).resolve())
+
 async def cmd_install(args: argparse.Namespace, config: Config, output: Output) -> int:
     """Install packages."""
     timings = Timings()
@@ -57,6 +99,7 @@ async def cmd_install(args: argparse.Namespace, config: Config, output: Output) 
 
     # Collect requirements
     requirements: list[str] = list(args.packages or [])
+    editable_targets: list[str] = list(getattr(args, "editable", []) or [])
 
     if args.requirements:
         for req_file in args.requirements:
@@ -68,16 +111,35 @@ async def cmd_install(args: argparse.Namespace, config: Config, output: Output) 
                 content = req_path.read_text(encoding="utf-8")
                 for line in content.splitlines():
                     line = line.strip()
-                    if not line or line.startswith("#") or line.startswith("-"):
+                    if not line or line.startswith("#"):
+                        continue
+                    if line.startswith("-e ") or line.startswith("--editable "):
+                        target = line.split(maxsplit=1)[1].strip()
+                        editable_targets.append(_normalize_editable_target(target, req_path.parent))
+                        continue
+                    if line.startswith("-"):
                         continue
                     requirements.append(line)
             except Exception as e:
                 output.error(f"Failed to read {req_file}: {e}")
                 return 1
 
-    if not requirements:
+    if not requirements and not editable_targets:
         output.error("No packages specified. Use: accelero install <packages>")
         return 1
+
+    env_python = _get_environment_python(env)
+
+    if not requirements and editable_targets:
+        editable_failed = 0
+        for target in editable_targets:
+            ok, err = _pip_install(env_python, target, editable=True)
+            if not ok:
+                editable_failed += 1
+                output.error(f"Editable install failed for {target}: {err}")
+            else:
+                output.success(f"Installed editable: {target}")
+        return 0 if editable_failed == 0 else 1
 
     output.info(f"Resolving {len(requirements)} package(s)...")
 
@@ -115,90 +177,136 @@ async def cmd_install(args: argparse.Namespace, config: Config, output: Output) 
                 continue
             to_install.append(pkg)
 
-        if not to_install:
-            output.success("All packages already installed")
-            return 0
-
-        # Download all wheels
-        timings.start("download")
-        download_dir = cache.cache_dir / "downloads"
-        download_dir.mkdir(parents=True, exist_ok=True)
-
-        download_tasks = []
-        for pkg in to_install:
-            # Determine destination filename
-            filename = pkg.url.split("/")[-1]
-            dest = download_dir / filename
-            download_tasks.append((pkg, pkg.url, dest))
-
-        with output.progress() as progress:
-            download_task = progress.add_task(
-                "Downloading", total=len(download_tasks)
-            )
-
-            async def download_one(pkg, url, dest):
-                if dest.exists() and dest.stat().st_size > 0:
-                    # Already downloaded
-                    return pkg, dest
-                # Stream download
-                try:
-                    await http.download_stream(url, dest)
-                except Exception as e:
-                    output.warning(f"Download failed for {pkg.name}: {e}")
-                    return pkg, None
-                return pkg, dest
-
-            results = await asyncio.gather(
-                *[download_one(p, u, d) for p, u, d in download_tasks]
-            )
-            progress.update(download_task, completed=len(results))
-
-        timings.stop("download")
-
-        # Install
-        timings.start("install")
-        installer = WheelInstaller(
-            target_dir=env.target_dir,
-            install_lib=env.site_packages,
-            install_bin=env.scripts_dir,
-        )
-
         install_results: list[Any] = []
         failed: list[tuple[str, str]] = []
-        with output.progress() as progress:
-            install_task = progress.add_task(
-                "Installing", total=len(results)
-            )
-            for pkg, dest in results:
-                if dest is None or not dest.exists():
-                    failed.append((pkg.name, "Download failed"))
-                    progress.advance(install_task)
-                    continue
 
-                try:
-                    installed = installer.install_wheel(dest)
-                    if installed:
-                        install_results.append(installed)
-                        # Cache the wheel
+        if not to_install:
+            output.success("All packages already installed")
+        else:
+            # Download all wheels
+            timings.start("download")
+            download_dir = cache.cache_dir / "downloads"
+            download_dir.mkdir(parents=True, exist_ok=True)
+
+            download_tasks = []
+            predownloaded: list[tuple[ResolvedPackage, Path]] = []
+            for pkg in to_install:
+                # Determine destination filename
+                filename = pkg.url.split("/")[-1]
+                if pkg.wheel:
+                    cached_wheel = cache.find_wheel(pkg.name, pkg.version, filename)
+                    if cached_wheel and cached_wheel.exists():
+                        dest = download_dir / filename
+                        if not dest.exists():
+                            try:
+                                shutil.copy2(cached_wheel, dest)
+                            except Exception:
+                                dest = cached_wheel
+                        predownloaded.append((pkg, dest))
+                        continue
+                dest = download_dir / filename
+                download_tasks.append((pkg, pkg.url, dest))
+
+            downloaded_results: list[tuple[ResolvedPackage, Path | None]] = []
+            if download_tasks:
+                with output.progress() as progress:
+                    download_task = progress.add_task(
+                        "Downloading", total=len(download_tasks)
+                    )
+
+                    async def download_one(pkg, url, dest):
+                        if dest.exists() and dest.stat().st_size > 0:
+                            # Already downloaded
+                            return pkg, dest
+                        # Stream download
                         try:
-                            cache.store_wheel(
-                                dest, pkg.name, pkg.version, dest.name, pkg.url
+                            await http.download_stream(url, dest)
+                        except Exception as e:
+                            output.warning(f"Download failed for {pkg.name}: {e}")
+                            return pkg, None
+                        return pkg, dest
+
+                    downloaded_results = await asyncio.gather(
+                        *[download_one(p, u, d) for p, u, d in download_tasks]
+                    )
+                    progress.update(download_task, completed=len(downloaded_results))
+
+            results: list[tuple[ResolvedPackage, Path | None]] = [
+                *[(pkg, path) for pkg, path in predownloaded],
+                *downloaded_results,
+            ]
+
+            timings.stop("download")
+
+            # Install
+            timings.start("install")
+            installer = WheelInstaller(
+                target_dir=env.target_dir,
+                install_lib=env.site_packages,
+                install_bin=env.scripts_dir,
+            )
+
+            with output.progress() as progress:
+                install_task = progress.add_task(
+                    "Installing", total=len(results)
+                )
+                for pkg, dest in results:
+                    if dest is None or not dest.exists():
+                        failed.append((pkg.name, "Download failed"))
+                        progress.advance(install_task)
+                        continue
+
+                    try:
+                        if pkg.wheel:
+                            installed = installer.install_wheel(dest)
+                            if installed:
+                                install_results.append(installed)
+                                # Cache the wheel
+                                try:
+                                    cache.store_wheel(
+                                        dest, pkg.name, pkg.version, dest.name, pkg.url
+                                    )
+                                except Exception:
+                                    pass
+                        else:
+                            ok, err = _pip_install(
+                                env_python,
+                                str(dest),
+                                editable=False,
+                                no_deps=True,
                             )
-                        except Exception:
-                            pass
-                except Exception as e:
-                    failed.append((pkg.name, str(e)))
-                    output.error(f"Install failed for {pkg.name}: {e}")
-                progress.advance(install_task)
-        timings.stop("install")
+                            if ok:
+                                install_results.append(
+                                    {
+                                        "name": pkg.name,
+                                        "version": pkg.version,
+                                    }
+                                )
+                            else:
+                                failed.append((pkg.name, err))
+                                output.error(f"Install failed for {pkg.name}: {err}")
+                    except Exception as e:
+                        failed.append((pkg.name, str(e)))
+                        output.error(f"Install failed for {pkg.name}: {e}")
+                    progress.advance(install_task)
+            timings.stop("install")
 
         timings.stop("total")
+
+    editable_failed = 0
+    for target in editable_targets:
+        ok, err = _pip_install(env_python, target, editable=True)
+        if not ok:
+            editable_failed += 1
+            output.error(f"Editable install failed for {target}: {err}")
+        else:
+            output.success(f"Installed editable: {target}")
 
     # Print summary
     cache_stats = cache.stats()
     elapsed = timings.total()
     output.summary(
-        f"⚡ Holo Accelerant — installed {len(install_results)} package(s)",
+        f"⚡ Holo Accelerant — installed {len(install_results) + (len(editable_targets) - editable_failed)} package(s)",
         [
             ("Total time", format_duration(elapsed)),
             ("Resolution", format_duration(timings.phases.get("resolution", 0))),
@@ -213,6 +321,9 @@ async def cmd_install(args: argparse.Namespace, config: Config, output: Output) 
 
     if failed:
         output.warning(f"Failed to install {len(failed)} package(s)")
+        return 1
+    if editable_failed:
+        output.warning(f"Failed to install {editable_failed} editable package(s)")
         return 1
     return 0
 
@@ -448,6 +559,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("-U", "--upgrade", action="store_true", help="Upgrade packages")
     install.add_argument("--force-reinstall", action="store_true", help="Force reinstall")
     install.add_argument("--require-hashes", action="store_true", help="Require hashes")
+    install.add_argument("-e", "--editable", action="append", help="Install a project in editable mode")
 
     # uninstall
     uninstall = subparsers.add_parser("uninstall", aliases=["rm"], help="Uninstall packages")

@@ -76,6 +76,16 @@ def test_cli_help():
         pass  # Help exits successfully
 
 
+def test_cli_editable_arg():
+    """Test editable install argument parsing."""
+    from accelero.cli.main import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["install", "-e", "."])
+    assert args.command == "install"
+    assert args.editable == ["."]
+
+
 @pytest.mark.asyncio
 async def test_http_client():
     """Test HTTP client (only runs with network)."""
