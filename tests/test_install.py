@@ -1,4 +1,5 @@
 """Integration tests for the installer."""
+import argparse
 import asyncio
 import json
 import os
@@ -256,3 +257,80 @@ class TestCLI:
         assert result.returncode == 0
         assert "install" in result.stdout
         assert "uninstall" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_sdist_fallback_uses_pip_no_deps(monkeypatch, tmp_path):
+    """Test sdist fallback install uses pip with --no-deps."""
+    from accelero.cli.main import cmd_install
+    import accelero.cli.main as cli_main
+    from accelero.cli.output import Output
+    from accelero.core.config import Config
+    from accelero.resolve.resolver import ResolvedPackage
+
+    pip_calls = []
+
+    class FakeHTTPClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def download_stream(self, url, dest):
+            dest.write_text("fake sdist content", encoding="utf-8")
+            return dest, "fakehash"
+
+    class FakeResolver:
+        def __init__(self, http_client, cache, no_cache=False):
+            pass
+
+        async def resolve_many(self, requirements):
+            return [
+                ResolvedPackage(
+                    name="sdist-only",
+                    version="1.0.0",
+                    url="https://example.invalid/sdist-only-1.0.0.tar.gz",
+                    sha256="",
+                    wheel=False,
+                )
+            ], []
+
+    def fake_pip_install(python_executable, target, *, editable=False, no_deps=False):
+        pip_calls.append(
+            {
+                "python_executable": str(python_executable),
+                "target": target,
+                "editable": editable,
+                "no_deps": no_deps,
+            }
+        )
+        return True, ""
+
+    monkeypatch.setattr(cli_main, "HTTPClient", FakeHTTPClient)
+    monkeypatch.setattr(cli_main, "SimpleResolver", FakeResolver)
+    monkeypatch.setattr(cli_main, "_pip_install", fake_pip_install)
+
+    args = argparse.Namespace(
+        target=str(tmp_path / "target-env"),
+        python=None,
+        packages=["sdist-only"],
+        requirements=None,
+        constraints=None,
+        upgrade=False,
+        force_reinstall=False,
+        require_hashes=False,
+        editable=None,
+    )
+    config = Config(cache_dir=tmp_path / "cache")
+    output = Output(no_progress=True, quiet=True)
+
+    result = await cmd_install(args, config, output)
+    assert result == 0
+    assert len(pip_calls) == 1
+    assert pip_calls[0]["editable"] is False
+    assert pip_calls[0]["no_deps"] is True
+    assert pip_calls[0]["target"].endswith(".tar.gz")
