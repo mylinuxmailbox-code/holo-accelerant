@@ -529,6 +529,44 @@ def cmd_self(args: argparse.Namespace, config: Config, output: Output) -> int:
 
 # === Main entry point ===
 
+def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
+    """Shared runtime flags (valid before or after the subcommand).
+
+    Defaults use SUPPRESS so parent/subcommand copies don't overwrite each other.
+    """
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", default=argparse.SUPPRESS, help="Verbose output"
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", default=argparse.SUPPRESS, help="Quiet output"
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true", default=argparse.SUPPRESS, help="Don't use cache"
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable progress display",
+    )
+    parser.add_argument("--python", default=argparse.SUPPRESS, help="Python interpreter to use")
+    parser.add_argument("--target", default=argparse.SUPPRESS, help="Target directory")
+    parser.add_argument(
+        "--dry-run", action="store_true", default=argparse.SUPPRESS, help="Dry run"
+    )
+    parser.add_argument(
+        "--offline", action="store_true", default=argparse.SUPPRESS, help="Offline mode"
+    )
+    parser.add_argument("--index-url", default=argparse.SUPPRESS, help="Index URL")
+    parser.add_argument(
+        "--extra-index-url",
+        default=argparse.SUPPRESS,
+        help="Extra index URL",
+        action="append",
+    )
+    parser.add_argument("-j", "--jobs", type=int, default=argparse.SUPPRESS, help="Max concurrent jobs")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser."""
     parser = argparse.ArgumentParser(
@@ -537,22 +575,13 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="⚡ accelero was built for speed.",
     )
     parser.add_argument("--version", action="store_true", help="Show version")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    parser.add_argument("-q", "--quiet", action="store_true", help="Quiet output")
-    parser.add_argument("--no-cache", action="store_true", help="Don't use cache")
-    parser.add_argument("--no-progress", action="store_true", help="Disable progress display")
-    parser.add_argument("--python", help="Python interpreter to use")
-    parser.add_argument("--target", help="Target directory")
-    parser.add_argument("--dry-run", action="store_true", help="Dry run")
-    parser.add_argument("--offline", action="store_true", help="Offline mode")
-    parser.add_argument("--index-url", help="Index URL")
-    parser.add_argument("--extra-index-url", help="Extra index URL", action="append")
-    parser.add_argument("-j", "--jobs", type=int, help="Max concurrent jobs")
+    _add_runtime_options(parser)
 
     subparsers = parser.add_subparsers(dest="command")
 
     # install
     install = subparsers.add_parser("install", aliases=["i"], help="Install packages")
+    _add_runtime_options(install)
     install.add_argument("packages", nargs="*", help="Packages to install")
     install.add_argument("-r", "--requirements", action="append", help="Requirements file")
     install.add_argument("-c", "--constraints", action="append", help="Constraints file")
@@ -563,23 +592,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     # uninstall
     uninstall = subparsers.add_parser("uninstall", aliases=["rm"], help="Uninstall packages")
+    _add_runtime_options(uninstall)
     uninstall.add_argument("packages", nargs="*", help="Packages to uninstall")
     uninstall.add_argument("-y", "--yes", action="store_true", help="Don't ask")
 
     # list
     list_cmd = subparsers.add_parser("list", aliases=["ls"], help="List packages")
+    _add_runtime_options(list_cmd)
     list_cmd.add_argument("--format", choices=["text", "json"], default="text")
 
     # show
     show = subparsers.add_parser("show", help="Show package info")
+    _add_runtime_options(show)
     show.add_argument("package", nargs="?", help="Package to show")
 
     # tree
     tree = subparsers.add_parser("tree", help="Dependency tree")
+    _add_runtime_options(tree)
     tree.add_argument("package", nargs="?", help="Package to inspect")
 
     # cache
     cache = subparsers.add_parser("cache", help="Cache management")
+    _add_runtime_options(cache)
     cache_sub = cache.add_subparsers(dest="cache_action")
     cache_sub.add_parser("dir", help="Cache directory")
     cache_sub.add_parser("info", help="Cache info")
@@ -589,6 +623,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # config
     config_cmd = subparsers.add_parser("config", help="Configuration")
+    _add_runtime_options(config_cmd)
     config_sub = config_cmd.add_subparsers(dest="config_action")
     config_sub.add_parser("list", help="List config")
     get_parser = config_sub.add_parser("get", help="Get config value")
@@ -598,16 +633,19 @@ def build_parser() -> argparse.ArgumentParser:
     set_parser.add_argument("value", help="Config value")
 
     # doctor
-    subparsers.add_parser("doctor", help="Diagnostic info")
+    doctor = subparsers.add_parser("doctor", help="Diagnostic info")
+    _add_runtime_options(doctor)
 
     # self
     self_cmd = subparsers.add_parser("self", help="Self-management")
+    _add_runtime_options(self_cmd)
     self_sub = self_cmd.add_subparsers(dest="self_action")
     self_sub.add_parser("version", help="Show version")
     self_sub.add_parser("update", help="Self-update")
 
     # benchmark
     bench = subparsers.add_parser("benchmark", help="Benchmark")
+    _add_runtime_options(bench)
     bench.add_argument("requirements_file", help="Requirements file to benchmark")
     bench.add_argument("--iterations", type=int, default=3)
     bench.add_argument("--compare", help="Compare with: pip,uv,accelero (csv)")
@@ -625,40 +663,56 @@ async def main_async() -> int:
         print(f"accelero {__version__}")
         return 0
 
+    # Shared flags may appear before or after the subcommand (SUPPRESS defaults).
+    verbose = getattr(args, "verbose", False)
+    quiet = getattr(args, "quiet", False)
+    no_progress = getattr(args, "no_progress", False)
+    no_cache = getattr(args, "no_cache", False)
+    dry_run = getattr(args, "dry_run", False)
+    offline = getattr(args, "offline", False)
+    index_url = getattr(args, "index_url", None)
+    extra_index_url = getattr(args, "extra_index_url", None)
+    jobs = getattr(args, "jobs", None)
+    python = getattr(args, "python", None)
+    target = getattr(args, "target", None)
+
     # Initialize output
     output = Output(
-        verbose=args.verbose,
-        quiet=args.quiet,
-        no_progress=args.no_progress,
+        verbose=verbose,
+        quiet=quiet,
+        no_progress=no_progress,
     )
 
     # Load configuration
     config = load_config()
 
     # Apply CLI overrides
-    if args.no_cache:
+    if no_cache:
         config.no_cache = True
-    if args.quiet:
+    if quiet:
         config.quiet = True
-    if args.verbose:
+    if verbose:
         config.verbose = True
-    if args.dry_run:
+    if dry_run:
         config.dry_run = True
-    if args.offline:
+    if offline:
         config.offline = True
-    if args.index_url:
-        config.index_url = args.index_url
-    if args.extra_index_url:
-        config.extra_index_urls.extend(args.extra_index_url)
-    if args.jobs:
-        config.max_concurrent = args.jobs
-    if args.python:
-        config.python = args.python
-    if args.target:
-        config.target = Path(args.target)
+    if index_url:
+        config.index_url = index_url
+    if extra_index_url:
+        config.extra_index_urls.extend(extra_index_url)
+    if jobs:
+        config.max_concurrent = jobs
+    # Ensure subcommands can always read these attrs.
+    args.python = python
+    args.target = target
+    if python:
+        config.python = python
+    if target:
+        config.target = Path(target)
 
     # Set log level
-    if args.verbose:
+    if verbose:
         logger.setLevel(10)  # DEBUG
 
     # Handle no-subcommand as shorthand

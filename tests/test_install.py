@@ -33,12 +33,16 @@ class TestInstall:
         shutil.rmtree(self.venv_dir, ignore_errors=True)
 
     def accelero(self, *args):
-        """Run accelero command."""
+        """Run accelero command via the package module (PATH-independent)."""
+        env = os.environ.copy()
+        src = str(Path(__file__).parent.parent / "src")
+        env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         result = subprocess.run(
-            ["accelero", "--target", str(self.venv_dir)] + list(args),
+            [sys.executable, "-m", "accelero", "--target", str(self.venv_dir)] + list(args),
             capture_output=True,
             text=True,
             cwd=str(Path(__file__).parent.parent),
+            env=env,
         )
         return result
 
@@ -236,27 +240,40 @@ class TestCache:
 class TestCLI:
     """Test CLI commands."""
 
-    def test_version(self):
-        """Test version flag."""
-        result = subprocess.run(
-            ["accelero", "--version"],
+    def _run_cli(self, *args):
+        """Invoke CLI without requiring an installed console script."""
+        env = os.environ.copy()
+        src = str(Path(__file__).parent.parent / "src")
+        env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        return subprocess.run(
+            [sys.executable, "-m", "accelero", *args],
             capture_output=True,
             text=True,
+            cwd=str(Path(__file__).parent.parent),
+            env=env,
         )
+
+    def test_version(self):
+        """Test version flag."""
+        result = self._run_cli("--version")
         assert result.returncode == 0
         assert "accelero" in result.stdout
         assert "0.1" in result.stdout
 
     def test_help(self):
         """Test help output."""
-        result = subprocess.run(
-            ["accelero", "--help"],
-            capture_output=True,
-            text=True,
-        )
+        result = self._run_cli("--help")
         assert result.returncode == 0
         assert "install" in result.stdout
         assert "uninstall" in result.stdout
+
+    def test_target_after_subcommand(self):
+        """Global options should work after the subcommand."""
+        with tempfile.TemporaryDirectory(prefix="accelero-target-") as tmp:
+            result = self._run_cli("install", "six", "--target", tmp)
+            assert result.returncode == 0, f"Failed: {result.stderr}\n{result.stdout}"
+            site = Path(tmp) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+            assert (site / "six.py").exists()
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="holo-accelerant",
-    version="0.1.0",
+    version="0.1.3",
     description="Holo Accelerant - Python package installation at ludicrous speed.",
     packages=find_packages(where="src"),
     package_dir={"": "src"},

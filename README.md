@@ -10,12 +10,14 @@ Holo Accelerant is a drop-in, high-performance alternative to `pip`, built for s
 
 ## Installation
 
-```bash
-# Install via pip
-pip install holo-accelerant
+The package is not on PyPI yet. Install from GitHub:
 
-# Or install in development mode
-git clone https://github.com/holo-accelerant/holo-accelerant.git
+```bash
+# One-liner install
+pip install "git+https://github.com/mylinuxmailbox-code/holo-accelerant.git"
+
+# Or clone and install in development mode
+git clone https://github.com/mylinuxmailbox-code/holo-accelerant.git
 cd holo-accelerant
 pip install -e .
 ```
@@ -24,6 +26,8 @@ After installation, use the `accelero` command:
 
 ```bash
 accelero --version
+# or, without relying on PATH scripts:
+python -m accelero --version
 ```
 
 ## Quick Start
@@ -297,7 +301,7 @@ accelero/
 
 ```bash
 # Clone and install
-git clone https://github.com/holo-accelerant/holo-accelerant.git
+git clone https://github.com/mylinuxmailbox-code/holo-accelerant.git
 cd holo-accelerant
 pip install -e ".[test,dev]"
 
